@@ -26,9 +26,6 @@ def get_tariff_data_from_s3(event, context):
 
     return tariff_jsons
 
-def create_or_update(tariff_json):
-    pass
-
 def create_connection(esb_host,esb_username,esb_password):
     credentials = pika.credentials.PlainCredentials(esb_username,esb_password)
     parameters = pika.ConnectionParameters(host=esb_host,port=5672,credentials=credentials)
@@ -38,8 +35,7 @@ def create_connection(esb_host,esb_username,esb_password):
 def create_channel(connection):
     channel = connection.channel()
     #channel.queue_declare(queue="tariffs", exclusive=False, auto_delete=False)
-    
-#channel.queue_bind(queue="tariffs",exchange='NobelgridExHeader',routing_key="Tariffs",arguments={"verb":"created","noun":"tariff","x-match":"all"})
+    #channel.queue_bind(queue="tariffs",exchange='NobelgridExHeader',routing_key="Tariffs",arguments={"verb":"created","noun":"tariff","x-match":"all"})
 
     return channel
 
@@ -60,17 +56,17 @@ def publish_tariff_json_to_esb(channel, tariff_json, verb):
 def lambda_handler(event, context):
     
     print("Making connection to broker @ "+event['esb-host'])
-    
-connection=create_connection(event['esb-host'],event['esb-username'],event['esb-password'])
+    connection=create_connection(event['esb-host'],event['esb-username'],event['esb-password'])
     channel=create_channel(connection)
     print("Connection established!")
 
     tariff_jsons=[]
     
-    
-    tariff_jsons.append(get_tariff_data_from_s3(event, context))
-    print(str(len(tariff_jsons))+" tariffs received")
-    
+    if event.get("tariff-bucket-names",False):
+        tariff_jsons.append(get_tariff_data_from_s3(event, context))
+        
+    # if event.get("...") etc.
+    # 
     
     # Publish tariffs to ESB
     for tariff_json in tariff_jsons:
