@@ -1,6 +1,8 @@
 import json
+import datetime
 import boto3
 import pika
+import requests 
 
 s3 = boto3.resource('s3')
 
@@ -8,7 +10,43 @@ def get_tariff_data_from_be_market(event, context):
     pass
 
 def get_tariff_data_from_uk_grid_carbon(event, context):
-    pass
+    print("Requesting carbon intensity from national grid API...")
+    natgrid_api_status_to_ng_traffic_light_map={
+        "very low":"green", 
+        "low":"green", 
+        "moderate":"yellow", 
+        "high":"red",
+        "very high":"red"
+    }
+    
+    from_datetime=(datetime.datetime.now()-datetime.timedelta(seconds=60*30)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]+'Z'
+    natgrid_intensity_api_end_point=event["natgrid_intensity_api_end_point"]
+    request_uri="intensity/%s/fw48h"%(from_datetime)
+    
+    headers = {
+        'Accept': 'application/json'
+    }
+    r = requests.get(natgrid_intensity_api_end_point+'/'+request_uri, params={}, headers = headers)
+    intensity_forecast_json_like=r.json()["data"]
+    
+    def convert_natgrid_intensity_api_datetime(natgrid_intensity_api_datetime_s):
+        natgrid_intensity_api_datetime=datetime.datetime.strptime(natgrid_intensity_api_datetime_s,"%Y-%m-%dT%H:%MZ")
+        return natgrid_intensity_api_datetime.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]+'Z'
+    
+    tariff_json_like=[]
+    for block in intensity_forecast_json_like:
+        tariff_period_json_like={}
+        tariff_period_json_like['TariffID']="GreenEnergyMax"
+        tariff_period_json_like['Price']=float(block["intensity"]["forecast"])/1000.
+        tariff_period_json_like['InjectionPrice']=0.05 #use rough value for solar PV intensity of 50 gCO2/kWh                
+        tariff_period_json_like['Color']=natgrid_api_status_to_ng_traffic_light_map[block["intensity"]["index"]]
+        tariff_period_json_like['StatusDescription']=block["intensity"]["index"]+" CO2 emissions."
+        tariff_period_json_like['StartTime']=convert_natgrid_intensity_api_datetime(block["from"])
+        tariff_period_json_like['EndTime']=convert_natgrid_intensity_api_datetime(block["to"])
+    
+        tariff_json_like.append(tariff_period_json_like)
+    
+    return tariff_json_like
 
 def get_tariff_data_from_s3(event, context):
     tariff_bucket_names=event['tariff-bucket-names']
@@ -50,7 +88,7 @@ def publish_tariff_json_to_esb(channel, tariff_json, verb):
                 headers={"verb":verb, "noun":"tariff"},
             )
     ):
-        print('Message publish was confirmed')
+        print('Published message to exchange')
     else:
         print('Message could not be confirmed')
 
@@ -58,7 +96,7 @@ def lambda_handler(event, context):
     
     print("Making connection to broker @ "+event['esb-host'])
     
-connection=create_connection(event['esb-host'],event['esb-username'],event['esb-password'])
+    connection=create_connection(event['esb-host'],event['esb-username'],event['esb-password'])
     channel=create_channel(connection)
     print("Connection established!")
 
@@ -66,12 +104,17 @@ connection=create_connection(event['esb-host'],event['esb-username'],event['esb-
     
     if event.get("tariff-bucket-names",False):
         tariff_jsons.append(get_tariff_data_from_s3(event, context))
-        
-    # if event.get("...") etc.
-    # 
+    
+    if event.get("natgrid_intensity_api_end_point",False):
+        tariff_jsons.append([get_tariff_data_from_uk_grid_carbon(event, context)])
     
     # Publish tariffs to ESB
     for tariff_json in tariff_jsons:
-        print("Publishing tariff json ...")
-        publish_tariff_json_to_esb(channel, tariff_json, "created")
+        
+        if not event.get("dummy-run",False):
+            print("Publishing tariff json ...")
+            publish_tariff_json_to_esb(channel, tariff_json, "created")
+        else:
+            print("Dummy run! JSON contents which would have been published are as follows:")
+            print(tariff_json)
 
